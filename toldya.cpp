@@ -29,7 +29,10 @@ int main(int argc, char** argv)
   
   twitter::client client(auth);
   std::set<twitter::user_id> streamed_friends;
-  client.setUserStreamNotifyCallback([&] (twitter::notification n) {
+  
+  std::cout << "Starting streaming" << std::endl;
+  
+  twitter::stream user_stream(client, [&] (twitter::notification n) {
     if (n.getType() == twitter::notification::type::friends)
     {
       streamed_friends = n.getFriends();
@@ -50,22 +53,21 @@ int main(int argc, char** argv)
         std::lock_guard<std::mutex> potential_guard(potential_mutex);
         std::cout << n.getTweet().getText() << std::endl;
         
-        potential.push_back(n.getTweet());
+        potential.push_back(std::move(n.getTweet()));
       }
     } else if (n.getType() == twitter::notification::type::followed)
     {
-      twitter::response resp = client.follow(n.getUser());
-      if (resp != twitter::response::ok)
+      try
       {
-        std::cout << "Twitter error while following @" << n.getUser().getScreenName() << ": " << resp << std::endl;
+        client.follow(n.getUser());
+      } catch (const twitter::twitter_error& error)
+      {
+        std::cout << "Twitter error while following @" << n.getUser().getScreenName() << ": " << error.what() << std::endl;
       }
     }
   });
   
   std::this_thread::sleep_for(std::chrono::minutes(1));
-  
-  std::cout << "Starting streaming" << std::endl;
-  client.startUserStream();
   
   for (;;)
   {
@@ -109,74 +111,75 @@ int main(int argc, char** argv)
     std::this_thread::sleep_for(to_wait);
     
     // Unfollow people who have unfollowed us
-    std::set<twitter::user_id> friends;
-    std::set<twitter::user_id> followers;
-    twitter::response resp = client.getFriends(friends);
-    if (resp == twitter::response::ok)
+    try
     {
-      resp = client.getFollowers(followers);
-      if (resp == twitter::response::ok)
+      std::set<twitter::user_id> friends = client.getFriends();
+      std::set<twitter::user_id> followers = client.getFollowers();
+
+      std::list<twitter::user_id> old_friends;
+      std::list<twitter::user_id> new_followers;
+      std::set_difference(std::begin(friends), std::end(friends), std::begin(followers), std::end(followers), std::back_inserter(old_friends));
+      std::set_difference(std::begin(followers), std::end(followers), std::begin(friends), std::end(friends), std::back_inserter(new_followers));
+      
+      std::set<twitter::user_id> old_friends_set;
+      for (auto f : old_friends)
       {
-        std::list<twitter::user_id> old_friends, new_followers;
-        std::set_difference(std::begin(friends), std::end(friends), std::begin(followers), std::end(followers), std::back_inserter(old_friends));
-        std::set_difference(std::begin(followers), std::end(followers), std::begin(friends), std::end(friends), std::back_inserter(new_followers));
+        old_friends_set.insert(f);
         
-        std::set<twitter::user_id> old_friends_set;
-        for (auto f : old_friends)
+        try
         {
-          old_friends_set.insert(f);
-          
-          resp = client.unfollow(f);
-          if (resp != twitter::response::ok)
-          {
-            std::cout << "Twitter error while unfollowing" << std::endl;
-          }
-        }
-        
-        for (auto f : new_followers)
+          client.unfollow(f);
+        } catch (const twitter::twitter_error& error)
         {
-          resp = client.follow(f);
-          if (resp != twitter::response::ok)
-          {
-            std::cout << "Twitter error while following" << std::endl;
-          }
+          std::cout << "Twitter error while unfollowing: " << error.what() << std::endl;
         }
-        
-        std::lock_guard<std::mutex> potential_guard(potential_mutex);
-        std::vector<twitter::tweet> to_keep;
-        for (auto pt : potential)
-        {
-          if (old_friends_set.count(pt.getAuthor()) == 0)
-          {
-            to_keep.push_back(pt);
-          }
-        }
-        
-        potential = to_keep;
-      } else {
-        std::cout << "Twitter error while getting followers: " << resp << std::endl;
       }
-    } else {
-      std::cout << "Twitter error while getting friends: " << resp << std::endl;
+      
+      for (auto f : new_followers)
+      {
+        try
+        {
+          client.follow(f);
+        } catch (const twitter::twitter_error& error)
+        {
+          std::cout << "Twitter error while following: " << error.what() << std::endl;
+        }
+      }
+      
+      std::lock_guard<std::mutex> potential_guard(potential_mutex);
+      std::vector<twitter::tweet> to_keep;
+      for (auto& pt : potential)
+      {
+        if (old_friends_set.count(pt.getAuthor().getID()) == 0)
+        {
+          to_keep.push_back(std::move(pt));
+        }
+      }
+      
+      potential = std::move(to_keep);
+    } catch (const twitter::twitter_error& error)
+    {
+      std::cout << "Twitter error while getting friends/followers: " << error.what() << std::endl;
     }
     
     // Tweet!
     if (!potential.empty())
     {
-      auto to_quote = potential[rand() % potential.size()];
+      auto to_quote = std::move(potential[rand() % potential.size()]);
       potential.clear();
       
       std::string caption = captions[rand() % captions.size()];
       std::string doc = caption + " " + to_quote.getURL();
       
-      twitter::tweet sent;
-      twitter::response resp = client.updateStatus(doc, sent);
-      if (resp != twitter::response::ok)
+      try
       {
-        std::cout << "Error tweeting: " << resp << std::endl;
+        client.updateStatus(doc);
+        
+        std::cout << "Tweeted!" << std::endl;
+      } catch (const twitter::twitter_error& error)
+      {
+        std::cout << "Error tweeting: " << error.what() << std::endl;
       }
     }
   }
-  
-  client.stopUserStream();
 }
