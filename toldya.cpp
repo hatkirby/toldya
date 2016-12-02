@@ -25,6 +25,7 @@ int main(int argc, char** argv)
   };
   
   std::vector<twitter::tweet> potential;
+  std::set<twitter::tweet_id> deletions;
   std::mutex potential_mutex;
   
   twitter::client client(auth);
@@ -51,7 +52,7 @@ int main(int argc, char** argv)
       )
       {
         std::lock_guard<std::mutex> potential_guard(potential_mutex);
-        std::cout << n.getTweet().getText() << std::endl;
+        std::cout << n.getTweet().getID() << ": " << n.getTweet().getText() << std::endl;
         
         potential.push_back(std::move(n.getTweet()));
       }
@@ -64,10 +65,16 @@ int main(int argc, char** argv)
       {
         std::cout << "Twitter error while following @" << n.getUser().getScreenName() << ": " << error.what() << std::endl;
       }
+    } else if (n.getType() == twitter::notification::type::deletion)
+    {
+      std::lock_guard<std::mutex> potential_guard(potential_mutex);
+      std::cout << "Tweet " << n.getTweetID() << " was deleted." << std::endl;
+      
+      deletions.insert(n.getTweetID());
     }
   });
   
-  std::this_thread::sleep_for(std::chrono::minutes(1));
+  std::this_thread::sleep_for(to_wait);
   
   for (;;)
   {
@@ -108,7 +115,7 @@ int main(int argc, char** argv)
       std::cout << "Sleeping for " << (waitlen/60/60/24) << " days..." << std::endl;
     }
     
-    std::this_thread::sleep_for(to_wait);
+    std::this_thread::sleep_for(std::chrono::minutes(1));
     
     // Unfollow people who have unfollowed us
     try
@@ -150,13 +157,16 @@ int main(int argc, char** argv)
       std::vector<twitter::tweet> to_keep;
       for (auto& pt : potential)
       {
-        if (old_friends_set.count(pt.getAuthor().getID()) == 0)
+        if (
+          (old_friends_set.count(pt.getAuthor().getID()) == 0) && // The author has not unfollowed
+          (deletions.count(pt.getID()) == 0)) // The tweet was not deleted
         {
           to_keep.push_back(std::move(pt));
         }
       }
       
       potential = std::move(to_keep);
+      deletions.clear();
     } catch (const twitter::twitter_error& error)
     {
       std::cout << "Twitter error while getting friends/followers: " << error.what() << std::endl;
