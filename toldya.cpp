@@ -74,7 +74,7 @@ int main(int argc, char** argv)
     }
   });
   
-  std::this_thread::sleep_for(to_wait);
+  std::this_thread::sleep_for(std::chrono::minutes(1));
   
   for (;;)
   {
@@ -115,7 +115,7 @@ int main(int argc, char** argv)
       std::cout << "Sleeping for " << (waitlen/60/60/24) << " days..." << std::endl;
     }
     
-    std::this_thread::sleep_for(std::chrono::minutes(1));
+    std::this_thread::sleep_for(to_wait);
     
     // Unfollow people who have unfollowed us
     try
