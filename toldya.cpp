@@ -22,11 +22,11 @@ int main(int argc, char** argv)
   std::string configfile(argv[1]);
   YAML::Node config = YAML::LoadFile(configfile);
 
-  twitter::auth auth;
-  auth.setConsumerKey(config["consumer_key"].as<std::string>());
-  auth.setConsumerSecret(config["consumer_secret"].as<std::string>());
-  auth.setAccessKey(config["access_key"].as<std::string>());
-  auth.setAccessSecret(config["access_secret"].as<std::string>());
+  twitter::auth auth(
+    config["consumer_key"].as<std::string>(),
+    config["consumer_secret"].as<std::string>(),
+    config["access_key"].as<std::string>(),
+    config["access_secret"].as<std::string>());
 
   std::vector<std::string> captions {
     "It begins.",
@@ -36,117 +36,62 @@ int main(int argc, char** argv)
   };
 
   std::map<twitter::user_id, std::vector<twitter::tweet>> potential;
-  std::set<twitter::tweet_id> deletions;
-  std::mutex potentialMutex;
+  std::set<twitter::tweet_id> tweetIds;
 
   twitter::client client(auth);
-  std::set<twitter::user_id> streamedFriends;
+  std::set<twitter::user_id> friends = client.getFriends();
 
-  std::cout << "Starting streaming" << std::endl;
+  for (;;)
+  {
+    // Poll every 5 minutes
+    auto midtime = time(NULL);
+    auto midtm = localtime(&midtime);
 
-  twitter::stream userStream(client, [&] (twitter::notification n) {
-    if (n.getType() == twitter::notification::type::friends)
+    // At 9am, do the daily tweet
+    bool shouldTweet = false;
+    if (midtm->tm_hour == 8 && midtm->tm_min >= 55)
     {
-      streamedFriends = n.getFriends();
-    } else if (n.getType() == twitter::notification::type::follow)
-    {
-      streamedFriends.insert(n.getUser().getID());
-    } else if (n.getType() == twitter::notification::type::unfollow)
-    {
-      streamedFriends.erase(n.getUser().getID());
-    } else if (n.getType() == twitter::notification::type::tweet)
+      shouldTweet = true;
+
+      std::cout << "Sleeping for 5 minutes (will tweet)..." << std::endl;
+    } else {
+      std::cout << "Sleeping for 5 minutes..." << std::endl;
+    }
+
+    std::this_thread::sleep_for(std::chrono::minutes(5));
+
+    std::list<twitter::tweet> newTweets = client.getHomeTimeline().poll();
+    for (twitter::tweet& nt : newTweets)
     {
       // Only monitor people you are following
       // Ignore retweets
       // Ignore messages
       if (
-        (streamedFriends.count(n.getTweet().getAuthor().getID()) == 1)
-        && (!n.getTweet().isRetweet())
-        && (n.getTweet().getText().front() != '@')
+        (friends.count(nt.getAuthor().getID()) == 1)
+        && (!nt.isRetweet())
+        && (nt.getText().front() != '@')
       )
       {
-        std::lock_guard<std::mutex> potentialGuard(potentialMutex);
-        std::cout << n.getTweet().getID() << ": " << n.getTweet().getText()
-          << std::endl;
+        std::cout << nt.getID() << ": " << nt.getText() << std::endl;
 
-        potential[n.getTweet().getAuthor().getID()].
-          push_back(std::move(n.getTweet()));
+        tweetIds.insert(nt.getID());
+        potential[nt.getAuthor().getID()].emplace_back(std::move(nt));
       }
-    } else if (n.getType() == twitter::notification::type::followed)
-    {
-      try
-      {
-        client.follow(n.getUser());
-      } catch (const twitter::twitter_error& error)
-      {
-        std::cout << "Twitter error while following @"
-          << n.getUser().getScreenName() << ": " << error.what() << std::endl;
-      }
-    } else if (n.getType() == twitter::notification::type::deletion)
-    {
-      std::lock_guard<std::mutex> potentialGuard(potentialMutex);
-      std::cout << "Tweet " << n.getTweetID() << " was deleted." << std::endl;
-
-      deletions.insert(n.getTweetID());
     }
-  });
 
-  std::this_thread::sleep_for(std::chrono::minutes(1));
+    newTweets.clear();
 
-  for (;;)
-  {
-    // Wait until 9am
-    auto midtime = time(NULL);
-    auto midtm = localtime(&midtime);
-    midtm->tm_hour = 0;
-    midtm->tm_min = 0;
-    midtm->tm_sec = 0;
-    auto to_until = std::chrono::system_clock::from_time_t(std::mktime(midtm));
-    auto to_wait = std::chrono::duration_cast<std::chrono::seconds>(
-      (to_until + std::chrono::hours(24 + 9))
-        - std::chrono::system_clock::now());
-
-    int waitlen = to_wait.count();
-    if (waitlen == 0)
+    // The rest of the loop is once-a-day
+    if (!shouldTweet)
     {
       continue;
-    } else if (waitlen == 1)
-    {
-      std::cout << "Sleeping for 1 second..." << std::endl;
-    } else if (waitlen < 60)
-    {
-      std::cout << "Sleeping for " << waitlen << " seconds..." << std::endl;
-    } else if (waitlen == 60)
-    {
-      std::cout << "Sleeping for 1 minute..." << std::endl;
-    } else if (waitlen < 60*60)
-    {
-      std::cout << "Sleeping for " << (waitlen/60) << " minutes..."
-        << std::endl;
-    } else if (waitlen == 60*60)
-    {
-      std::cout << "Sleeping for 1 hour..." << std::endl;
-    } else if (waitlen < 60*60*24)
-    {
-      std::cout << "Sleeping for " << (waitlen/60/60) << " hours..."
-        << std::endl;
-    } else if (waitlen == 60*60*24)
-    {
-      std::cout << "Sleeping for 1 day..." << std::endl;
-    } else {
-      std::cout << "Sleeping for " << (waitlen/60/60/24) << " days..."
-        << std::endl;
     }
-
-    std::this_thread::sleep_for(to_wait);
-
-    // The rest of the loop deals with the potential tweets
-    std::lock_guard<std::mutex> potentialGuard(potentialMutex);
 
     // Unfollow people who have unfollowed us
     try
     {
-      std::set<twitter::user_id> friends = client.getFriends();
+      friends = client.getFriends();
+
       std::set<twitter::user_id> followers = client.getFollowers();
 
       std::list<twitter::user_id> oldFriends;
@@ -192,6 +137,19 @@ int main(int argc, char** argv)
         }
       }
 
+      // Hydrate the tweets we've received to make sure that none of them have
+      // been deleted.
+      std::list<twitter::tweet> hydrated = client.hydrateTweets(tweetIds);
+      tweetIds.clear();
+
+      std::set<twitter::tweet_id> hydratedIds;
+      for (twitter::tweet& tw : hydrated)
+      {
+        hydratedIds.insert(tw.getID());
+      }
+
+      hydrated.clear();
+
       // Filter the potential tweets for users that are still following us, and
       // and for tweets that haven't been deleted.
       std::map<twitter::user_id, std::vector<twitter::tweet>> toKeep;
@@ -206,7 +164,7 @@ int main(int argc, char** argv)
           for (twitter::tweet& pt : p.second)
           {
             // The tweet was not deleted
-            if (!deletions.count(pt.getID()))
+            if (hydratedIds.count(pt.getID()))
             {
               userTweets.push_back(std::move(pt));
             }
@@ -220,7 +178,6 @@ int main(int argc, char** argv)
       }
 
       potential = std::move(toKeep);
-      deletions.clear();
     } catch (const twitter::twitter_error& error)
     {
       std::cout << "Twitter error while getting friends/followers: "

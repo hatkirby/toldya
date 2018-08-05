@@ -11,6 +11,6 @@ include_directories(
   ${yaml-cpp_INCLUDE_DIRS})
 
 add_executable(toldya toldya.cpp)
-set_property(TARGET toldya PROPERTY CXX_STANDARD 11)
+set_property(TARGET toldya PROPERTY CXX_STANDARD 14)
 set_property(TARGET toldya PROPERTY CXX_STANDARD_REQUIRED ON)
 target_link_libraries(toldya ${yaml-cpp_LIBRARIES} twitter++)
