@@ -102,13 +102,13 @@ int main(int argc, char** argv)
         std::end(followers),
         std::back_inserter(oldFriends));
 
-      std::list<twitter::user_id> newFollowers;
+      std::set<twitter::user_id> newFollowers;
       std::set_difference(
         std::begin(followers),
         std::end(followers),
         std::begin(friends),
         std::end(friends),
-        std::back_inserter(newFollowers));
+        std::inserter(newFollowers, std::begin(newFollowers)));
 
       std::set<twitter::user_id> oldFriendsSet;
       for (twitter::user_id f : oldFriends)
@@ -125,15 +125,21 @@ int main(int argc, char** argv)
         }
       }
 
-      for (twitter::user_id f : newFollowers)
+      std::list<twitter::user> newFollowerObjs =
+        client.hydrateUsers(std::move(newFollowers));
+
+      for (const twitter::user& f : newFollowerObjs)
       {
-        try
+        if (!f.isProtected())
         {
-          client.follow(f);
-        } catch (const twitter::twitter_error& error)
-        {
-          std::cout << "Twitter error while following: " << error.what()
-            << std::endl;
+          try
+          {
+            client.follow(f);
+          } catch (const twitter::twitter_error& error)
+          {
+            std::cout << "Twitter error while following: " << error.what()
+              << std::endl;
+          }
         }
       }
 
